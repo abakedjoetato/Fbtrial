@@ -80,29 +80,20 @@ class Bot(DCBot):
     
     async def init_db(self):
         """Initialize database connection"""
-        if not MONGODB_AVAILABLE:
-            logger.warning("MongoDB client not available, database functionality disabled")
-            return False
-            
         try:
-            # Get MongoDB connection string from environment variables
-            mongo_uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
-            db_name = os.environ.get("DB_NAME", "discord_bot")
+            # Import the database module
+            from database import get_database
             
-            # Connect to MongoDB
-            self.mongo_client = AsyncIOMotorClient(mongo_uri)
+            # Get the database instance
+            db = await get_database()
             
-            # Get database
-            self.db = self.mongo_client[db_name]
+            # Store the database instance
+            self.db = db
             
-            # Test connection
-            await self.mongo_client.admin.command('ping')
-            
-            logger.info(f"Connected to MongoDB database: {db_name}")
+            logger.info("Database connection initialized successfully")
             return True
         except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            self.mongo_client = None
+            logger.error(f"Error initializing database connection: {e}")
             self.db = None
             return False
     
