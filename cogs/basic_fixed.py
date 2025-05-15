@@ -325,7 +325,7 @@ class Basic(commands.Cog):
             
             await safely_respond_to_interaction(ctx, embed=embed)
 
-def setup(bot):
+async def setup(bot):
     """
     Set up the basic cog
     

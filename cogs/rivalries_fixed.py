@@ -83,10 +83,18 @@ class RivalriesCog(commands.Cog):
                 callback=self.context_view_rivalries,
             )
             
-            # Get the command tree for the bot to add the context menu
-            command_tree = create_command_tree(bot)
-            asyncio.create_task(command_tree.add_command(self.ctx_menu))
-            logger.info("Successfully registered the View Rivalries context menu")
+            # Use the bot's existing command tree instead of creating a new one
+            try:
+                # First try to access the bot's command tree directly
+                if hasattr(bot, "tree"):
+                    asyncio.create_task(bot.tree.add_command(self.ctx_menu))
+                    logger.info("Successfully registered the View Rivalries context menu using bot.tree")
+                else:
+                    # Skip context menu registration to avoid errors
+                    logger.warning("Skipping context menu registration - no command tree available")
+            except Exception as inner_e:
+                logger.error(f"Error registering context menu to existing tree: {inner_e}")
+                # Don't raise the error to allow the cog to load
         except Exception as e:
             logger.error(f"Failed to register rivalries context menu: {e}")
             logger.error(traceback.format_exc())

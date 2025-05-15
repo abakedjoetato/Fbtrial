@@ -330,5 +330,6 @@ class Bounties(commands.Cog):
             logger.error(f"Error getting bounties: {e}")
             return SafeMongoDBResult(success=False, error=str(e))
 
-def setup(bot):
+async def setup(bot):
     bot.add_cog(Bounties(bot))
+    logger.info("Bounties cog loaded")

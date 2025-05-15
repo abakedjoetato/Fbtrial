@@ -73,6 +73,7 @@ class SimpleTemplateCog(commands.Cog):
         await ctx.send("Simple prefix command working!")
 
 
-def setup(bot):
+async def setup(bot):
     """Add the cog to the bot"""
     bot.add_cog(SimpleTemplateCog(bot))
+    logger.info(f"{SimpleTemplateCog.__name__} cog loaded")

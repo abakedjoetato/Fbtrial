@@ -137,7 +137,12 @@ class Bot(DCBot):
             "cogs.basic_fixed",
             "cogs.cog_template_fixed",
             "cogs.bounties_fixed",
-            "cogs.guild_settings_fixed"
+            "cogs.guild_settings_fixed",
+            "cogs.utility_fixed",
+            "cogs.custom_commands_fixed",
+            "cogs.autoresponder_fixed",
+            "cogs.logging_fixed",
+            "cogs.welcome_fixed"
         ]
         
         # Load core cogs first
