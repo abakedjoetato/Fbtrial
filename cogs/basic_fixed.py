@@ -43,8 +43,7 @@ class Basic(commands.Cog):
         self.start_time = datetime.datetime.now()
         logger.info("Basic cog initialized")
     
-    @slash_command(name="latency", description="Check the bot's latency")
-    @command_handler()
+    @commands.command(name="latency_slash", description="Check the bot's latency")
     async def ping_slash(self, ctx):
         """
         Check the bot's latency
@@ -52,7 +51,7 @@ class Basic(commands.Cog):
         This command responds with the bot's WebSocket latency.
         """
         latency = round(self.bot.latency * 1000)
-        await safely_respond_to_interaction(ctx, f"🏓 Pong! Latency: {latency}ms")
+        await ctx.send(f"🏓 Pong! Latency: {latency}ms")
     
     @commands.command(name="latency", aliases=["pong"])
     async def ping(self, ctx):
@@ -64,8 +63,7 @@ class Basic(commands.Cog):
         latency = round(self.bot.latency * 1000)
         await ctx.send(f"🏓 Pong! Latency: {latency}ms")
     
-    @slash_command(name="uptime", description="Check the bot's uptime")
-    @command_handler()
+    @commands.command(name="uptime_slash", description="Check the bot's uptime")
     async def uptime_slash(self, ctx):
         """
         Check the bot's uptime
@@ -78,7 +76,7 @@ class Basic(commands.Cog):
         minutes, seconds = divmod(remainder, 60)
         
         uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
-        await safely_respond_to_interaction(ctx, f"⏱️ Bot uptime: {uptime_str}")
+        await ctx.send(f"⏱️ Bot uptime: {uptime_str}")
     
     @commands.command(name="uptime")
     async def uptime(self, ctx):
@@ -95,8 +93,7 @@ class Basic(commands.Cog):
         uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
         await ctx.send(f"⏱️ Bot uptime: {uptime_str}")
     
-    @slash_command(name="info", description="Show information about the bot")
-    @command_handler()
+    @commands.command(name="info_slash", description="Show information about the bot")
     async def info_slash(self, ctx):
         """
         Show information about the bot

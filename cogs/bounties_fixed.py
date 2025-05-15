@@ -137,10 +137,11 @@ class Bounties(commands.Cog):
         )
     
     # Define list bounties command - separate command not in group for compatibility
-    @slash_command(
-        name="bounties",
+    @bounty.command(
+        name="list",
         description="List all active bounties"
     )
+    @command_handler()
     async def list_bounties_command(
         self, 
         ctx: Interaction,

@@ -33,16 +33,12 @@ class SimpleTemplateCog(commands.Cog):
         self.bot = bot
         logger.info(f"{self.__class__.__name__} cog initialized")
     
-    # Create a slash command group at the class level
-    simple_group = SlashCommandGroup(
-        name="simple",
-        description="Simple commands for demonstration"
-    )
-    
-    @simple_group.command(
-        name="ping", 
+    # Individual slash commands instead of a group
+    @slash_command(
+        name="simple_ping", 
         description="Check if the bot is responsive"
     )
+    @command_handler()
     async def ping_command(self, ctx: Interaction):
         """Check if the bot is responsive"""
         await safely_respond_to_interaction(
@@ -50,8 +46,8 @@ class SimpleTemplateCog(commands.Cog):
             f"Pong! Bot latency: {round(self.bot.latency * 1000)}ms"
         )
     
-    @simple_group.command(
-        name="echo", 
+    @slash_command(
+        name="simple_echo", 
         description="Echo back a message"
     )
     @command_handler()
