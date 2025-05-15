@@ -48,10 +48,11 @@ class Bounties(commands.Cog):
     )
     
     # Define place bounty subcommand
-    @slash_command(
-        name="bounty_place",
+    @bounty.command(
+        name="place",
         description="Place a bounty on a player"
     )
+    @command_handler()
     async def bounty_place(
         self, 
         ctx: Interaction, 
