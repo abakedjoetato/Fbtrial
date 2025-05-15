@@ -1,122 +1,226 @@
 """
-Base model for MongoDB in the Tower of Temptation PvP Statistics Bot
+Base Model for MongoDB Document Models
 
-This module contains the BaseModel class that all other models inherit from.
+This module provides a base model that all other models can inherit from.
 """
-import logging
-from datetime import datetime
-from typing import Dict, Any, Optional, Type, TypeVar, ClassVar
 
+import logging
+import uuid
+from typing import Dict, Any, Optional, List, ClassVar, TypeVar, Type, Union
+from datetime import datetime
+
+from database import get_database
+
+# Set up logging
 logger = logging.getLogger(__name__)
 
+# Define generic type for model classes
 T = TypeVar('T', bound='BaseModel')
 
 class BaseModel:
     """Base model for MongoDB documents"""
-    collection_name = None  # Will be overridden by subclasses
     
-    def __init__(self, db=None, data=None):
-        """Initialize the base model with default attributes
+    # Class variables to be overridden by subclasses
+    collection_name: ClassVar[str] = "base"
+    
+    def __init__(self, **kwargs):
+        """
+        Initialize a model instance
         
         Args:
-            db: Database connection
-            data: Model data dictionary
+            **kwargs: Field values for the model
         """
-        self._id = None
-        self.db = db
-        self.data = data or {}
-    
-    @classmethod
-    def from_document(cls: Type[T], document: Dict[str, Any], db=None) -> Optional[T]:
-        """Create a model instance from a MongoDB document
-        
-        Args:
-            document: MongoDB document
-            db: Optional database connection
+        # Set _id if not provided
+        if '_id' not in kwargs:
+            self._id = str(uuid.uuid4())
+        else:
+            self._id = kwargs['_id']
             
-        Returns:
-            Model instance or None if document is None
-        """
-        if document is None:
-            return None
+        # Set created_at if not provided
+        if 'created_at' not in kwargs:
+            self.created_at = datetime.utcnow()
+        else:
+            self.created_at = kwargs['created_at']
             
-        # Create instance with db and data
-        instance = cls(db=db, data=document.copy())
+        # Set updated_at
+        self.updated_at = datetime.utcnow()
         
-        # Also set attributes for backward compatibility
-        for key, value in document.items():
-            # Convert MongoDB _id to id if needed
-            if key == '_id':
-                instance._id = value
-                continue
-                
-            # Set attribute if it exists in the document
-            if hasattr(instance, key):
-                setattr(instance, key, value)
-            else:
-                # Add any additional fields from document
-                setattr(instance, key, value)
-                
-        return instance
-    
-    def to_document(self) -> Dict[str, Any]:
-        """Convert model instance to a MongoDB document
-        
-        Returns:
-            MongoDB document
-        """
-        document = {}
-        
-        # Get all attributes that are not private/internal
-        for key, value in self.__dict__.items():
-            # Skip internal attributes
-            if key.startswith('__'):
-                continue
-                
-            # Skip MongoDB _id if it's None
-            if key == '_id' and value is None:
-                continue
-            
-            # Include all other attributes
-            document[key] = value
-            
-        return document
+        # Set all other attributes
+        for key, value in kwargs.items():
+            if key not in ['_id', 'created_at', 'updated_at']:
+                setattr(self, key, value)
     
     @property
-    def id(self) -> Optional[str]:
-        """Get the MongoDB document ID
+    def id(self) -> str:
+        """Get the document ID"""
+        return self._id
+        
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the model to a dictionary
         
         Returns:
-            MongoDB document ID or None
+            Dict representation of the model
         """
-        return str(self._id) if self._id is not None else None
-    
-    def __str__(self) -> str:
-        """String representation of the model
+        result = {}
         
-        Returns:
-            String representation
+        # Add all instance attributes
+        for key, value in self.__dict__.items():
+            result[key] = value
+            
+        return result
+        
+    @classmethod
+    async def create(cls: Type[T], **kwargs) -> Optional[T]:
         """
-        if hasattr(self, 'name') and getattr(self, 'name') is not None:
-            return f"{self.__class__.__name__} (name: {getattr(self, 'name')})"
-        elif hasattr(self, '_id') and self._id is not None:
-            return f"{self.__class__.__name__} (id: {self._id})"
-        else:
-            return f"{self.__class__.__name__} (New)"
-    
-    @staticmethod
-    def is_not_none(obj) -> bool:
-        """Safely check if an object is not None, for database objects
-        
-        This helper method is designed to be used when checking database objects
-        instead of directly using them in boolean contexts. MongoDB objects
-        cannot be used directly in boolean tests and must be explicitly compared
-        with None.
+        Create a new document in the database
         
         Args:
-            obj: The object to check
+            **kwargs: Field values for the model
             
         Returns:
-            bool: True if the object is not None, False otherwise
+            New model instance or None if creation failed
         """
-        return obj is not None
+        # Create new instance
+        instance = cls(**kwargs)
+        
+        # Get database instance
+        db = await get_database()
+        
+        # Insert into database
+        doc_id = await db.insert_one(cls.collection_name, instance.to_dict())
+        
+        if doc_id:
+            # Update _id if it was generated by the database
+            instance._id = doc_id
+            return instance
+        
+        return None
+        
+    @classmethod
+    async def get_by_id(cls: Type[T], id: str) -> Optional[T]:
+        """
+        Get a document by ID
+        
+        Args:
+            id: Document ID
+            
+        Returns:
+            Model instance or None if not found
+        """
+        # Get database instance
+        db = await get_database()
+        
+        # Find document
+        document = await db.find_one(cls.collection_name, {'_id': id})
+        
+        if document:
+            return cls(**document)
+        
+        return None
+        
+    @classmethod
+    async def find_one(cls: Type[T], query: Dict[str, Any]) -> Optional[T]:
+        """
+        Find a document matching a query
+        
+        Args:
+            query: Query to find document
+            
+        Returns:
+            Model instance or None if not found
+        """
+        # Get database instance
+        db = await get_database()
+        
+        # Find document
+        document = await db.find_one(cls.collection_name, query)
+        
+        if document:
+            return cls(**document)
+        
+        return None
+        
+    @classmethod
+    async def find_many(cls: Type[T], query: Dict[str, Any],
+                      limit: Optional[int] = None,
+                      sort: Optional[List[tuple]] = None) -> List[T]:
+        """
+        Find documents matching a query
+        
+        Args:
+            query: Query to find documents
+            limit: Maximum number of documents to return
+            sort: List of (field, direction) tuples for sorting
+            
+        Returns:
+            List of model instances
+        """
+        # Get database instance
+        db = await get_database()
+        
+        # Find documents
+        documents = await db.find_many(cls.collection_name, query, limit=limit, sort=sort)
+        
+        # Convert to model instances
+        return [cls(**document) for document in documents]
+        
+    async def save(self) -> bool:
+        """
+        Save the model to the database
+        
+        Returns:
+            True if save was successful, False otherwise
+        """
+        # Update updated_at timestamp
+        self.updated_at = datetime.utcnow()
+        
+        # Get database instance
+        db = await get_database()
+        
+        # Update in database
+        result = await db.update_one(
+            self.__class__.collection_name,
+            {'_id': self._id},
+            {'$set': self.to_dict()},
+            upsert=True
+        )
+        
+        return result
+        
+    async def delete(self) -> bool:
+        """
+        Delete the model from the database
+        
+        Returns:
+            True if deletion was successful, False otherwise
+        """
+        # Get database instance
+        db = await get_database()
+        
+        # Delete from database
+        result = await db.delete_one(
+            self.__class__.collection_name,
+            {'_id': self._id}
+        )
+        
+        return result
+        
+    @classmethod
+    async def count(cls, query: Dict[str, Any] = {}) -> int:
+        """
+        Count documents matching a query
+        
+        Args:
+            query: Query to count documents
+            
+        Returns:
+            Number of matching documents
+        """
+        # Get database instance
+        db = await get_database()
+        
+        # Count documents
+        count = await db.count_documents(cls.collection_name, query)
+        
+        return count

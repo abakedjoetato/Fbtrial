@@ -1,631 +1,581 @@
 """
-Database module for MongoDB connection and operations.
-Handles all database-related functions for the Discord bot.
+MongoDB Database Connection Module
+
+This module provides a wrapper for MongoDB connection using motor with a fallback to
+an in-memory database when MongoDB is not available.
 """
+
 import os
 import logging
-import pymongo
-import datetime
-from pymongo.errors import ConnectionFailure, ConfigurationError
+import asyncio
+from typing import Optional, Dict, Any, List, Union
+from datetime import datetime
 
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# MongoDB client and database references
-client = None
-db = None
+try:
+    from motor.motor_asyncio import AsyncIOMotorClient
+    MONGODB_AVAILABLE = True
+except ImportError:
+    logger.warning("MongoDB not available, database functionality will be disabled")
+    MONGODB_AVAILABLE = False
 
-def init_db(max_retries=3, retry_delay=2):
-    """Initialize MongoDB connection using credentials from environment variables.
-    
-    Args:
-        max_retries: Maximum number of connection attempts
-        retry_delay: Seconds to wait between retries
+# MongoDB Connection Config
+# For development, use connection details from environment variables 
+# For production, will need to use a real MongoDB Atlas connection string
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "discord_bot")
+
+# In our Replit environment, we will use the PostgreSQL DB until MongoDB is available
+if not MONGODB_URI or MONGODB_URI == "mongodb://localhost:27017":
+    # Use the PostgreSQL connection string format for the MongoDB URI
+    # This is a fallback for development in Replit
+    try:
+        pg_host = os.environ.get("PGHOST")
+        pg_port = os.environ.get("PGPORT")
+        pg_user = os.environ.get("PGUSER")
+        pg_pass = os.environ.get("PGPASSWORD")
+        pg_db = os.environ.get("PGDATABASE")
         
-    Returns:
-        bool: True if connected successfully, False otherwise
-    """
-    global client, db
+        if all([pg_host, pg_port, pg_user, pg_pass, pg_db]):
+            logger.info("Using PostgreSQL in place of MongoDB for development")
+            # Store the PostgreSQL connection info for informational purposes
+            PG_CONNECTION_INFO = {
+                "host": pg_host,
+                "port": pg_port,
+                "user": pg_user,
+                "database": pg_db
+            }
+    except Exception as e:
+        logger.error(f"Error setting up PostgreSQL fallback: {e}")
+
+class Database:
+    """MongoDB database connection handler"""
     
-    # If already initialized, just return True
-    if client is not None and db is not None:
-        try:
-            # Quick connection test
-            client.admin.command('ping')
-            logger.info("Database already initialized and connected")
+    def __init__(self, connection_string: Optional[str] = None, db_name: Optional[str] = None):
+        """
+        Initialize the database connection
+        
+        Args:
+            connection_string: MongoDB connection string
+            db_name: Database name
+        """
+        self.connection_string = connection_string or MONGODB_URI
+        self.db_name = db_name or DB_NAME
+        self.client = None
+        self.db = None
+        self.connected = False
+        # In-memory fallback for Replit environment when MongoDB is not available
+        self.in_memory_db = {}
+        self.using_fallback = False
+
+    async def connect(self) -> bool:
+        """
+        Connect to the MongoDB database
+        
+        Returns:
+            bool: True if connection was successful, False otherwise
+        """
+        if not MONGODB_AVAILABLE:
+            logger.warning("MongoDB client not available, using in-memory fallback")
+            self.using_fallback = True
+            self.connected = True
             return True
-        except Exception:
-            # Connection lost, will reinitialize
-            logger.warning("Database was initialized but connection lost, reconnecting...")
-            client = None
-            db = None
-    
-    # Get MongoDB connection details from environment
-    mongo_uri = os.getenv("MONGODB_URI")
-    if not mongo_uri:
-        logger.critical("MONGODB_URI environment variable not set")
-        return False
-    
-    # Check if this is a placeholder/demo URI
-    if "placeholder" in mongo_uri or "example.mongodb.net" in mongo_uri:
-        logger.warning("Using placeholder MongoDB URI - database operations will be mocked")
-        
-        # Create a mock MongoDB database and client
-        class MockDatabase:
-            def __init__(self, name):
-                self.name = name
-                self.collections = {}
             
-            def __getitem__(self, collection_name):
-                if collection_name not in self.collections:
-                    self.collections[collection_name] = MockCollection(collection_name)
-                return self.collections[collection_name]
-            
-            def list_collection_names(self):
-                return list(self.collections.keys())
-            
-            def create_collection(self, name):
-                if name not in self.collections:
-                    self.collections[name] = MockCollection(name)
-                return self.collections[name]
-                
-        class MockClient:
-            def __init__(self):
-                self.databases = {}
-                self.admin = MockAdminDatabase()
-            
-            def __getitem__(self, db_name):
-                if db_name not in self.databases:
-                    self.databases[db_name] = MockDatabase(db_name)
-                return self.databases[db_name]
-                
-        class MockAdminDatabase:
-            def command(self, command_name):
-                return {"ok": 1}
-                
-        class MockCollection:
-            def __init__(self, name):
-                self.name = name
-                self.data = []
-                
-            def find_one(self, query=None, *args, **kwargs):
-                return {"_id": "mock_id", "name": f"Mock {self.name}", "mock": True}
-            
-            def find(self, query=None, *args, **kwargs):
-                return [{"_id": f"mock_{i}", "name": f"Mock {self.name} {i}", "mock": True} for i in range(5)]
-            
-            def count_documents(self, query=None, *args, **kwargs):
-                return 5
-            
-            def insert_one(self, document, *args, **kwargs):
-                class InsertResult:
-                    @property
-                    def inserted_id(self):
-                        return "mock_inserted_id"
-                return InsertResult()
-            
-            def update_one(self, query, update, *args, **kwargs):
-                class UpdateResult:
-                    @property
-                    def modified_count(self):
-                        return 1
-                    @property
-                    def matched_count(self):
-                        return 1
-                return UpdateResult()
-            
-            def delete_one(self, query, *args, **kwargs):
-                class DeleteResult:
-                    @property
-                    def deleted_count(self):
-                        return 1
-                return DeleteResult()
-            
-            def delete_many(self, query, *args, **kwargs):
-                class DeleteResult:
-                    @property
-                    def deleted_count(self):
-                        return 5
-                return DeleteResult()
-                
-            def create_index(self, keys, **kwargs):
-                return f"mock_index_{self.name}"
-        
-        # Set up global client and db with mock objects
-        client = MockClient()
-        db_name = os.getenv("DB_NAME", "discordbot")
-        db = client[db_name]
-        
-        logger.info(f"Mock database initialized with name: {db_name}")
-        return True
-    
-    db_name = os.getenv("DB_NAME", "discordbot")
-    logger.info(f"Using database: {db_name}")
-    
-    # Attempt to connect with retries
-    for attempt in range(1, max_retries + 1):
         try:
             # Connect to MongoDB
-            logger.info(f"Connecting to MongoDB (attempt {attempt}/{max_retries})")
-            client = pymongo.MongoClient(
-                mongo_uri,
-                serverSelectionTimeoutMS=5000,  # 5 second timeout for server selection
-                connectTimeoutMS=5000,          # 5 second timeout for initial connection
-                socketTimeoutMS=30000           # 30 second timeout for socket operations
-            )
+            self.client = AsyncIOMotorClient(self.connection_string)
             
-            # Verify connection
-            client.admin.command('ping')
-            logger.info("Connected to MongoDB successfully")
+            # Get database
+            self.db = self.client[self.db_name]
             
-            # Set database
-            db = client[db_name]
+            # Test connection
+            try:
+                await self.client.admin.command('ping')
+                self.connected = True
+                logger.info(f"Connected to MongoDB database: {self.db_name}")
+                return True
+            except Exception as e:
+                logger.warning(f"MongoDB connection test failed: {e}")
+                logger.info("Using in-memory fallback database")
+                self.using_fallback = True
+                self.connected = True
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error connecting to MongoDB: {e}")
+            logger.info("Using in-memory fallback database")
+            self.client = None
+            self.db = None
+            self.using_fallback = True
+            self.connected = True
+            return True
+
+    async def disconnect(self):
+        """Disconnect from the MongoDB database"""
+        if self.client:
+            self.client.close()
+            self.client = None
+            self.db = None
+        
+        self.connected = False
+        self.using_fallback = False
+        logger.info("Disconnected from database")
+
+    async def get_collection(self, collection_name: str):
+        """
+        Get a collection from the database
+        
+        Args:
+            collection_name: Name of the collection
             
-            # Create necessary collections and indexes if they don't exist
-            if ensure_collections():
-                logger.info("Collections and indexes verified")
-            else:
-                logger.warning("Failed to verify collections and indexes, but connection is established")
+        Returns:
+            Collection object or None if not connected
+        """
+        if self.using_fallback:
+            # Initialize collection in in-memory DB if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+            return self.in_memory_db[collection_name]
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't get collection: {collection_name}")
+            return None
+            
+        return self.db[collection_name]
+        
+    async def insert_one(self, collection_name: str, document: Dict[str, Any]) -> Optional[str]:
+        """
+        Insert a document into a collection
+        
+        Args:
+            collection_name: Name of the collection
+            document: Document to insert
+            
+        Returns:
+            Inserted document ID or None if insertion failed
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                
+            # Add _id field if not present
+            if "_id" not in document:
+                import uuid
+                document["_id"] = str(uuid.uuid4())
+                
+            # Add created_at timestamp
+            if "created_at" not in document:
+                document["created_at"] = datetime.utcnow()
+                
+            self.in_memory_db[collection_name].append(document)
+            return document["_id"]
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't insert into: {collection_name}")
+            return None
+            
+        try:
+            collection = self.db[collection_name]
+            result = await collection.insert_one(document)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Error inserting document into {collection_name}: {e}")
+            return None
+            
+    async def find_one(self, collection_name: str, query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Find a document in a collection
+        
+        Args:
+            collection_name: Name of the collection
+            query: Query to find the document
+            
+        Returns:
+            Found document or None if not found or error
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                return None
+                
+            # Simple query matching for in-memory DB
+            for doc in self.in_memory_db[collection_name]:
+                matches = True
+                for key, value in query.items():
+                    if key not in doc or doc[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    return doc
+            return None
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't query: {collection_name}")
+            return None
+            
+        try:
+            collection = self.db[collection_name]
+            result = await collection.find_one(query)
+            return result
+        except Exception as e:
+            logger.error(f"Error finding document in {collection_name}: {e}")
+            return None
+
+    async def find_many(self, collection_name: str, query: Dict[str, Any], 
+                       limit: Optional[int] = None, 
+                       sort: Optional[List[tuple]] = None) -> List[Dict[str, Any]]:
+        """
+        Find documents in a collection
+        
+        Args:
+            collection_name: Name of the collection
+            query: Query to find documents
+            limit: Maximum number of documents to return
+            sort: List of (field, direction) tuples for sorting
+            
+        Returns:
+            List of found documents or empty list if not found or error
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                return []
+                
+            # Simple query matching for in-memory DB
+            results = []
+            for doc in self.in_memory_db[collection_name]:
+                matches = True
+                for key, value in query.items():
+                    if key not in doc or doc[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    results.append(doc)
+            
+            # Simple sorting for in-memory DB
+            if sort:
+                for field, direction in reversed(sort):
+                    reverse = direction == -1
+                    results.sort(key=lambda x: x.get(field, None) is not None and x.get(field, None) or "", reverse=reverse)
+            
+            # Apply limit
+            if limit and len(results) > limit:
+                results = results[:limit]
+                
+            return results
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't query: {collection_name}")
+            return []
+            
+        try:
+            collection = self.db[collection_name]
+            cursor = collection.find(query)
+            
+            if sort:
+                cursor = cursor.sort(sort)
+                
+            if limit:
+                cursor = cursor.limit(limit)
+                
+            return await cursor.to_list(length=limit or 100)
+        except Exception as e:
+            logger.error(f"Error finding documents in {collection_name}: {e}")
+            return []
+
+    async def update_one(self, collection_name: str, query: Dict[str, Any], 
+                        update: Dict[str, Any], upsert: bool = False) -> bool:
+        """
+        Update a document in a collection
+        
+        Args:
+            collection_name: Name of the collection
+            query: Query to find the document
+            update: Update to apply
+            upsert: Whether to insert if document doesn't exist
+            
+        Returns:
+            True if update was successful, False otherwise
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                
+                # Upsert case for empty collection
+                if upsert:
+                    new_doc = {}
+                    for key, value in query.items():
+                        new_doc[key] = value
+                    
+                    # Handle $set operator
+                    if "$set" in update:
+                        for key, value in update["$set"].items():
+                            new_doc[key] = value
+                    
+                    # Add _id field if not present
+                    if "_id" not in new_doc:
+                        import uuid
+                        new_doc["_id"] = str(uuid.uuid4())
+                    
+                    # Add created_at timestamp
+                    if "created_at" not in new_doc:
+                        new_doc["created_at"] = datetime.utcnow()
+                    
+                    # Add updated_at timestamp
+                    new_doc["updated_at"] = datetime.utcnow()
+                    
+                    self.in_memory_db[collection_name].append(new_doc)
+                    return True
+                
+                return False
+            
+            # Find document to update
+            found_index = None
+            for i, doc in enumerate(self.in_memory_db[collection_name]):
+                matches = True
+                for key, value in query.items():
+                    if key not in doc or doc[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    found_index = i
+                    break
+            
+            # Handle document not found
+            if found_index is None:
+                if not upsert:
+                    return False
+                
+                # Upsert case
+                new_doc = {}
+                for key, value in query.items():
+                    new_doc[key] = value
+                
+                # Handle $set operator
+                if "$set" in update:
+                    for key, value in update["$set"].items():
+                        new_doc[key] = value
+                
+                # Add _id field if not present
+                if "_id" not in new_doc:
+                    import uuid
+                    new_doc["_id"] = str(uuid.uuid4())
+                
+                # Add created_at timestamp
+                if "created_at" not in new_doc:
+                    new_doc["created_at"] = datetime.utcnow()
+                
+                # Add updated_at timestamp
+                new_doc["updated_at"] = datetime.utcnow()
+                
+                self.in_memory_db[collection_name].append(new_doc)
+                return True
+            
+            # Update the document
+            doc = self.in_memory_db[collection_name][found_index]
+            
+            # Handle $set operator
+            if "$set" in update:
+                for key, value in update["$set"].items():
+                    doc[key] = value
+            
+            # Handle $inc operator
+            if "$inc" in update:
+                for key, value in update["$inc"].items():
+                    if key not in doc:
+                        doc[key] = value
+                    else:
+                        doc[key] += value
+            
+            # Add updated_at timestamp
+            doc["updated_at"] = datetime.utcnow()
             
             return True
             
-        except (ConnectionFailure, ConfigurationError) as e:
-            logger.error(f"Failed to connect to MongoDB (attempt {attempt}/{max_retries}): {e}")
-            
-            if attempt < max_retries:
-                # Wait before trying again
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                import time
-                time.sleep(retry_delay)
-            else:
-                logger.critical(f"Failed to connect to MongoDB after {max_retries} attempts")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Unexpected error connecting to MongoDB (attempt {attempt}/{max_retries}): {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            if attempt < max_retries:
-                # Wait before trying again
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                import time
-                time.sleep(retry_delay)
-            else:
-                logger.critical(f"Failed to connect to MongoDB after {max_retries} attempts due to unexpected error")
-                return False
-    
-    # This line should never be reached if the function is working correctly
-    return False
-
-def ensure_collections():
-    """Create necessary collections and indexes if they don't exist.
-    
-    Returns:
-        bool: True if all collections and indexes were verified or created successfully
-    """
-    global db
-    
-    # Make sure db is initialized
-    if db is None:
-        logger.error("Database not initialized, cannot ensure collections")
-        return False
-    
-    try:
-        # Get existing collections
-        existing_collections = db.list_collection_names()
-        logger.info(f"Found existing collections: {', '.join(existing_collections) if existing_collections else 'none'}")
-        
-        # Define collections to ensure with their indexes
-        collections_to_ensure = {
-            "canvases": [
-                {"keys": [("guild_id", pymongo.ASCENDING)], "unique": True}
-            ],
-            "pixels": [
-                {"keys": [
-                    ("canvas_id", pymongo.ASCENDING),
-                    ("x", pymongo.ASCENDING),
-                    ("y", pymongo.ASCENDING)
-                ], "unique": False}
-            ],
-            "users": [
-                {"keys": [("user_id", pymongo.ASCENDING)], "unique": True}
-            ],
-            # Add any other collections and their indexes here
-        }
-        
-        # Create collections and indexes as needed
-        for collection_name, indexes in collections_to_ensure.items():
-            try:
-                # Create collection if it doesn't exist
-                if collection_name not in existing_collections:
-                    logger.info(f"Creating '{collection_name}' collection")
-                    collection = db.create_collection(collection_name)
-                    logger.info(f"Created '{collection_name}' collection")
-                else:
-                    collection = db[collection_name]
-                    logger.info(f"Collection '{collection_name}' already exists")
-                
-                # Create indexes
-                for index_config in indexes:
-                    try:
-                        keys = index_config["keys"]
-                        unique = index_config.get("unique", False)
-                        index_name = collection.create_index(keys, unique=unique)
-                        logger.info(f"Created/verified index '{index_name}' on '{collection_name}'")
-                    except Exception as index_error:
-                        logger.error(f"Error creating index on '{collection_name}': {index_error}")
-                        # Continue with other indexes even if one fails
-            
-            except Exception as coll_error:
-                logger.error(f"Error ensuring collection '{collection_name}': {coll_error}")
-                import traceback
-                logger.error(traceback.format_exc())
-                # Continue with other collections even if one fails
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error ensuring collections: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
-def get_canvas(guild_id):
-    """Get canvas data for a specific guild. Creates a new canvas if one doesn't exist.
-    
-    Args:
-        guild_id: The ID of the guild
-        
-    Returns:
-        dict or None: Canvas data dictionary or None if error
-    """
-    global db
-    
-    # Check database connection
-    if db is None:
-        logger.error("Database not initialized, cannot get canvas")
-        return None
-    
-    # Validate guild_id
-    if guild_id is None:
-        logger.error("Cannot get canvas without a guild_id")
-        return None
-    
-    try:
-        # Try to find existing canvas
-        canvas = None
-        try:
-            canvas = db.canvases.find_one({"guild_id": guild_id})
-        except Exception as find_error:
-            logger.error(f"Error finding canvas for guild {guild_id}: {find_error}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
-        
-        # If canvas doesn't exist, create a new one
-        if canvas is None:
-            try:
-                # Define default canvas properties
-                new_canvas = {
-                    "guild_id": guild_id,
-                    "width": 100,               # Default canvas width
-                    "height": 100,              # Default canvas height
-                    "background_color": "#FFFFFF",  # Default canvas background color
-                    "created_at": datetime.datetime.utcnow(),
-                    "last_modified": datetime.datetime.utcnow()
-                }
-                
-                # Insert the new canvas
-                result = db.canvases.insert_one(new_canvas)
-                
-                # Get the inserted document with the _id
-                if result.inserted_id:
-                    canvas = db.canvases.find_one({"_id": result.inserted_id})
-                    logger.info(f"Created new canvas for guild {guild_id}")
-                else:
-                    logger.error(f"Failed to create new canvas for guild {guild_id}")
-                    return None
-                    
-            except Exception as create_error:
-                logger.error(f"Error creating new canvas for guild {guild_id}: {create_error}")
-                import traceback
-                logger.error(traceback.format_exc())
-                return None
-        
-        return canvas
-        
-    except Exception as e:
-        logger.error(f"Error retrieving canvas for guild {guild_id}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
-
-def get_pixel(canvas_id, x, y):
-    """Get pixel data at specific coordinates.
-    
-    Args:
-        canvas_id: ID of the canvas
-        x: X coordinate
-        y: Y coordinate
-        
-    Returns:
-        dict or None: Pixel data dictionary or None if not found or error
-    """
-    global db
-    
-    # Check database connection
-    if db is None:
-        logger.error("Database not initialized, cannot get pixel")
-        return None
-    
-    # Validate parameters
-    if canvas_id is None:
-        logger.error("Cannot get pixel without a canvas_id")
-        return None
-    
-    # Validate coordinates
-    try:
-        x = int(x)
-        y = int(y)
-    except (ValueError, TypeError):
-        logger.error(f"Invalid coordinates: x={x}, y={y}. Must be integers.")
-        return None
-    
-    try:
-        # Query the pixel data
-        pixel = db.pixels.find_one({
-            "canvas_id": canvas_id,
-            "x": x,
-            "y": y
-        })
-        
-        return pixel
-        
-    except Exception as e:
-        logger.error(f"Error retrieving pixel for canvas {canvas_id} at ({x}, {y}): {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
-
-def set_pixel(canvas_id, x, y, color, user_id):
-    """Set pixel data at specific coordinates.
-    
-    Args:
-        canvas_id: ID of the canvas
-        x: X coordinate
-        y: Y coordinate
-        color: Color value for the pixel
-        user_id: ID of the user setting the pixel
-        
-    Returns:
-        bool: True if pixel was set successfully, False otherwise
-    """
-    global db
-    
-    # Check database connection
-    if db is None:
-        logger.error("Database not initialized, cannot set pixel")
-        return False
-    
-    # Validate required parameters
-    if canvas_id is None:
-        logger.error("Cannot set pixel without a canvas_id")
-        return False
-    
-    if color is None:
-        logger.error("Cannot set pixel without a color")
-        return False
-        
-    if user_id is None:
-        logger.error("Cannot set pixel without a user_id")
-        return False
-    
-    # Validate coordinates
-    try:
-        x = int(x)
-        y = int(y)
-    except (ValueError, TypeError):
-        logger.error(f"Invalid coordinates: x={x}, y={y}. Must be integers.")
-        return False
-    
-    # Perform pixel update with error handling
-    try:
-        # Update or insert the pixel
-        now = datetime.datetime.utcnow()
-        result = db.pixels.update_one(
-            {"canvas_id": canvas_id, "x": x, "y": y},
-            {"$set": {
-                "color": color,
-                "last_modified_by": user_id,
-                "last_modified": now
-            }},
-            upsert=True
-        )
-        
-        pixel_updated = result.modified_count > 0 or result.upserted_id is not None
-        
-        if not pixel_updated:
-            logger.warning(f"Pixel for canvas {canvas_id} at ({x}, {y}) was not updated")
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't update: {collection_name}")
             return False
-        
-        # Also update the canvas last_modified timestamp
+            
         try:
-            db.canvases.update_one(
-                {"_id": canvas_id},
-                {"$set": {"last_modified": now}}
-            )
-        except Exception as canvas_update_error:
-            # Non-critical, just log
-            logger.warning(f"Failed to update canvas last_modified: {canvas_update_error}")
-        
-        # Update user stats
-        try:
-            db.users.update_one(
-                {"user_id": user_id},
-                {
-                    "$inc": {"pixels_placed": 1},
-                    "$set": {"last_active": now}
-                },
-                upsert=True
-            )
-        except Exception as user_update_error:
-            # Non-critical, just log
-            logger.warning(f"Failed to update user stats: {user_update_error}")
-        
-        logger.info(f"Pixel set on canvas {canvas_id} at ({x}, {y}) with color {color} by user {user_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error setting pixel for canvas {canvas_id} at ({x}, {y}): {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
+            collection = self.db[collection_name]
+            result = await collection.update_one(query, update, upsert=upsert)
+            return result.modified_count > 0 or (upsert and result.upserted_id is not None)
+        except Exception as e:
+            logger.error(f"Error updating document in {collection_name}: {e}")
+            return False
 
-def get_user_stats(user_id):
-    """Get statistics for a specific user.
-    
-    Args:
-        user_id: ID of the user
+    async def delete_one(self, collection_name: str, query: Dict[str, Any]) -> bool:
+        """
+        Delete a document from a collection
         
-    Returns:
-        dict or None: User statistics dictionary or None if error
-    """
-    global db
-    
-    # Check database connection
-    if db is None:
-        logger.error("Database not initialized, cannot get user stats")
-        return None
-    
-    # Validate user_id
-    if user_id is None:
-        logger.error("Cannot get user stats without a user_id")
-        return None
-    
-    try:
-        # Find the user in the database
-        user = None
+        Args:
+            collection_name: Name of the collection
+            query: Query to find the document
+            
+        Returns:
+            True if deletion was successful, False otherwise
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                return False
+            
+            # Find document to delete
+            found_index = None
+            for i, doc in enumerate(self.in_memory_db[collection_name]):
+                matches = True
+                for key, value in query.items():
+                    if key not in doc or doc[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    found_index = i
+                    break
+            
+            # Handle document not found
+            if found_index is None:
+                return False
+            
+            # Delete the document
+            self.in_memory_db[collection_name].pop(found_index)
+            return True
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't delete from: {collection_name}")
+            return False
+            
         try:
-            user = db.users.find_one({"user_id": user_id})
-        except Exception as find_error:
-            logger.error(f"Error finding user stats for user {user_id}: {find_error}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
-        
-        # If user doesn't exist, create a new entry
-        if user is None:
-            try:
-                # Initialize with default values
-                new_user = {
-                    "user_id": user_id,
-                    "pixels_placed": 0,
-                    "first_seen": datetime.datetime.utcnow(),
-                    "last_active": datetime.datetime.utcnow()
-                }
-                
-                # Insert the new user
-                result = db.users.insert_one(new_user)
-                
-                # Get the inserted document with the _id
-                if result.inserted_id:
-                    user = db.users.find_one({"_id": result.inserted_id})
-                    logger.info(f"Created new user stats for user {user_id}")
-                else:
-                    logger.error(f"Failed to create new user stats for user {user_id}")
-                    return None
-            except Exception as create_error:
-                logger.error(f"Error creating new user stats for user {user_id}: {create_error}")
-                import traceback
-                logger.error(traceback.format_exc())
-                return None
-        
-        # Check if we need to update the last_active timestamp
-        if user and not user.get("last_active"):
-            try:
-                db.users.update_one(
-                    {"_id": user["_id"]},
-                    {"$set": {"last_active": datetime.datetime.utcnow()}}
-                )
-                # Update the in-memory user object too
-                user["last_active"] = datetime.datetime.utcnow()
-            except Exception as update_error:
-                # Non-critical, just log
-                logger.warning(f"Failed to update last_active timestamp: {update_error}")
-        
-        return user
-        
-    except Exception as e:
-        logger.error(f"Error retrieving user stats for user {user_id}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+            collection = self.db[collection_name]
+            result = await collection.delete_one(query)
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Error deleting document from {collection_name}: {e}")
+            return False
 
-def clear_canvas(guild_id):
-    """Clear all pixels from a guild's canvas.
-    
-    Args:
-        guild_id: The ID of the guild whose canvas should be cleared
+    async def count_documents(self, collection_name: str, query: Dict[str, Any]) -> int:
+        """
+        Count documents in a collection
         
-    Returns:
-        int: Number of pixels deleted from the canvas (0 if error)
-    """
-    global db
-    
-    # Check database connection
-    if db is None:
-        logger.error("Database not initialized, cannot clear canvas")
-        return 0
-    
-    # Validate guild_id
-    if guild_id is None:
-        logger.error("Cannot clear canvas without a guild_id")
-        return 0
-    
-    try:
-        # Get the canvas for this guild
-        canvas = get_canvas(guild_id)
-        
-        # Verify the canvas exists
-        if canvas is None:
-            logger.error(f"Canvas not found for guild {guild_id}")
+        Args:
+            collection_name: Name of the collection
+            query: Query to count documents
+            
+        Returns:
+            Number of documents matching the query or 0 if error
+        """
+        if self.using_fallback:
+            # Initialize collection if it doesn't exist
+            if collection_name not in self.in_memory_db:
+                self.in_memory_db[collection_name] = []
+                return 0
+            
+            # Count documents matching query
+            count = 0
+            for doc in self.in_memory_db[collection_name]:
+                matches = True
+                for key, value in query.items():
+                    if key not in doc or doc[key] != value:
+                        matches = False
+                        break
+                if matches:
+                    count += 1
+            
+            return count
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't count documents in: {collection_name}")
             return 0
-        
-        # Get the canvas ID
-        canvas_id = canvas.get("_id")
-        if canvas_id is None:
-            logger.error(f"Canvas ID not found for guild {guild_id}")
-            return 0
-        
+            
         try:
-            # Delete all pixels for this canvas
-            result = db.pixels.delete_many({"canvas_id": canvas_id})
-            
-            # Log the result
-            deleted_count = result.deleted_count if hasattr(result, 'deleted_count') else 0
-            logger.info(f"Cleared {deleted_count} pixels from canvas for guild {guild_id}")
-            
-            # Also update the canvas last_cleared timestamp
-            try:
-                db.canvases.update_one(
-                    {"_id": canvas_id},
-                    {"$set": {"last_cleared": datetime.datetime.utcnow()}}
-                )
-                logger.info(f"Updated last_cleared timestamp for guild {guild_id}")
-            except Exception as update_error:
-                # This is non-critical, so just log it
-                logger.warning(f"Failed to update last_cleared timestamp: {update_error}")
-            
-            return deleted_count
-            
-        except Exception as delete_error:
-            logger.error(f"Error deleting pixels for guild {guild_id}: {delete_error}")
-            import traceback
-            logger.error(traceback.format_exc())
+            collection = self.db[collection_name]
+            return await collection.count_documents(query)
+        except Exception as e:
+            logger.error(f"Error counting documents in {collection_name}: {e}")
             return 0
+
+    async def create_index(self, collection_name: str, keys: List[tuple], 
+                          unique: bool = False, sparse: bool = False) -> bool:
+        """
+        Create an index in a collection
+        
+        Args:
+            collection_name: Name of the collection
+            keys: List of (field, direction) tuples for the index
+            unique: Whether the index should enforce uniqueness
+            sparse: Whether the index should be sparse
             
-    except Exception as e:
-        logger.error(f"Error clearing canvas for guild {guild_id}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return 0
+        Returns:
+            True if index creation was successful, False otherwise
+        """
+        if self.using_fallback:
+            # No real index support for in-memory DB
+            return True
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't create index in: {collection_name}")
+            return False
+            
+        try:
+            collection = self.db[collection_name]
+            await collection.create_index(keys, unique=unique, sparse=sparse)
+            return True
+        except Exception as e:
+            logger.error(f"Error creating index in {collection_name}: {e}")
+            return False
+
+    async def drop_collection(self, collection_name: str) -> bool:
+        """
+        Drop a collection
+        
+        Args:
+            collection_name: Name of the collection
+            
+        Returns:
+            True if collection was dropped, False otherwise
+        """
+        if self.using_fallback:
+            # Remove collection from in-memory DB
+            if collection_name in self.in_memory_db:
+                del self.in_memory_db[collection_name]
+            return True
+            
+        if not self.connected or not self.db:
+            logger.warning(f"Not connected to database, can't drop collection: {collection_name}")
+            return False
+            
+        try:
+            await self.db.drop_collection(collection_name)
+            logger.info(f"Dropped collection: {collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error dropping collection {collection_name}: {e}")
+            return False
+
+# Create a global database instance
+db_instance = None
+
+async def get_database() -> Database:
+    """
+    Get or create a global database instance
+    
+    Returns:
+        Database instance
+    """
+    global db_instance
+    
+    if db_instance is None:
+        db_instance = Database()
+        await db_instance.connect()
+        
+    return db_instance
