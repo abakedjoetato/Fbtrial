@@ -197,6 +197,59 @@ class GeneralCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Error tracking command usage: {e}")
     
+    @slash_command(name="avatar", description="Display a user's avatar")
+    async def avatar(self, ctx: Interaction, member: Optional[Member] = None):
+        """Display a user's avatar in full size"""
+        # Defer the response to avoid timeout
+        await ctx.response.defer()
+        
+        # Use provided member or command user if not specified
+        member = member or ctx.user
+        
+        # Get avatar URL
+        avatar_url = None
+        if hasattr(member, "display_avatar") and member.display_avatar:
+            avatar_url = member.display_avatar.url
+        elif hasattr(member, "avatar") and member.avatar:
+            avatar_url = member.avatar.url
+        else:
+            await ctx.followup.send("This user doesn't have an avatar.")
+            return
+        
+        # Create the embed
+        embed = Embed(
+            title=f"{member.display_name}'s Avatar",
+            color=member.color if hasattr(member, "color") else Color.blue()
+        )
+        
+        # Set the avatar as image (full size)
+        embed.set_image(url=avatar_url)
+        
+        # Add footer with timestamp
+        embed.set_footer(text=f"Requested by {ctx.user.display_name}")
+        embed.timestamp = datetime.datetime.now()
+        
+        await ctx.followup.send(embed=embed)
+        
+        # Track command usage if database is available
+        if self.db:
+            try:
+                await self.bot.update_one(
+                    "users", 
+                    {"user_id": str(ctx.user.id)}, 
+                    {"$inc": {"command_count": 1}},
+                    upsert=True
+                )
+                
+                await self.bot.update_one(
+                    "bot_stats", 
+                    {"_id": "stats"}, 
+                    {"$inc": {"avatar_command_count": 1, "total_commands": 1}},
+                    upsert=True
+                )
+            except Exception as e:
+                logger.error(f"Error tracking command usage: {e}")
+    
     @commands.Cog.listener()
     async def on_message(self, message):
         """Process each message sent in channels the bot can see"""
