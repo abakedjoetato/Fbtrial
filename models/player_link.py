@@ -65,6 +65,39 @@ class PlayerLink(BaseModel):
             raise
 
     @classmethod
+    async def get_by_discord_id(cls, db, discord_id: str, guild_id: Optional[Union[str, int]] = None) -> Optional['PlayerLink']:
+        """
+        Get player link by Discord user ID
+
+        Args:
+            db: Database connection or ignored (for compatibility)
+            discord_id: Discord user ID
+            guild_id: Optional guild ID to filter by
+
+        Returns:
+            PlayerLink if found, None otherwise
+        """
+        # For compatibility with both database access patterns
+        from database import get_database
+        db = await get_database()
+        
+        # Build query
+        query = {"linked_id": discord_id, "link_type": "discord"}
+        
+        # Add guild filter if provided
+        if guild_id is not None:
+            query["guild_id"] = str(guild_id)
+            
+        # Find link
+        link_data = await db.find_one(cls.collection_name, query)
+        
+        # Return link if found
+        if link_data:
+            return cls(db=db, data=link_data)
+        
+        return None
+        
+    @classmethod
     async def find_by_player(cls, db, player_id: str, guild_id: Union[str, int], link_type: Optional[str] = None) -> List['PlayerLink']:
         """
         Find all links for a player in a guild
