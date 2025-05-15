@@ -1,7 +1,0 @@
-basic.py basic_commands.py basic_fixed.py
-debug.py debug_fixed.py
-error_handler.py error_handling.py error_handling_cog.py error_handling_cog_simple.py
-player_links.py player_links_simple.py
-premium.py premium_commands.py premium_new_updated_fixed.py
-setup_fixed.py setup_fixed_enhanced.py setup_fixed_simple.py
-sftp.py sftp_commands.py sftp_commands_fixed.py sftp_commands_simple.py
